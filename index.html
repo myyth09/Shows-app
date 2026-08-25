@@ -112,6 +112,7 @@ button { font-family: inherit; }
 .field-label { font-size: 12.5px; font-weight: 700; color: #948DA3; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.04em; }
 .text-input { width: 100%; background: #0e0c14; border: 1px solid #2a2436; border-radius: 12px; padding: 14px; color: #F5F3FA; font-size: 15px; margin-bottom: 16px; }
 .text-input:focus { outline: none; border-color: #A855F7; }
+textarea.text-input { font-family: inherit; resize: vertical; line-height: 1.5; }
 .hint { font-size: 12px; line-height: 1.5; color: #948DA3; margin: -8px 0 16px; }
 .primary-btn { width: 100%; background: #A855F7; color: #0e0c14; border: none; border-radius: 12px; padding: 14px 0; font-size: 15px; font-weight: 700; }
 .primary-btn:disabled { opacity: 0.5; }
@@ -253,24 +254,24 @@ button { font-family: inherit; }
     </div>
 
     <div class="tab-panel active" data-panel="url">
-      <p class="field-label">Episode title</p>
-      <input id="epUrlTitle" class="text-input" type="text" placeholder="e.g. Episode 4" />
-      <p class="field-label">Video link</p>
-      <input id="epUrlInput" class="text-input" type="url" inputmode="url" placeholder="https://example.com/clip.mp4" autocapitalize="off" autocorrect="off" />
-      <p class="hint">Works for a direct video file link, or a page that explicitly allows this from a browser (rare). Otherwise paste the direct video file link.</p>
-      <button id="epUrlSubmit" class="primary-btn">Add Episode</button>
+      <p class="field-label">Title (optional)</p>
+      <input id="epUrlTitle" class="text-input" type="text" placeholder="e.g. Episode — leave blank to auto-number" />
+      <p class="field-label">Video link(s)</p>
+      <textarea id="epUrlInput" class="text-input" rows="4" inputmode="url" placeholder="One link per line to add several at once" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+      <p class="hint">Works for direct video file links, or pages that explicitly allow this from a browser (rare). Paste several links, one per line, to add them all as episodes in order.</p>
+      <button id="epUrlSubmit" class="primary-btn">Add Episode(s)</button>
       <p id="epUrlStatus" class="status"></p>
     </div>
 
     <div class="tab-panel" data-panel="upload">
-      <p class="field-label">Episode title</p>
-      <input id="epFileTitle" class="text-input" type="text" placeholder="e.g. Episode 4" />
+      <p class="field-label">Title (optional)</p>
+      <input id="epFileTitle" class="text-input" type="text" placeholder="e.g. Episode — leave blank to use filenames" />
       <label class="dropzone" for="epFileInput">
         <span class="dropzone-glyph">＋</span>
-        <span>Tap to choose a video</span>
+        <span>Tap to choose one or more videos</span>
       </label>
-      <input id="epFileInput" type="file" accept="video/*" hidden />
-      <p class="hint">Stored on this device only, in this app.</p>
+      <input id="epFileInput" type="file" accept="video/*" multiple hidden />
+      <p class="hint">Select multiple files at once to add them all in order. Stored on this device only, in this app.</p>
       <p id="epFileStatus" class="status"></p>
     </div>
 
@@ -661,77 +662,103 @@ document.getElementById("epUrlSubmit").addEventListener("click", async () => {
   const urlInput = document.getElementById("epUrlInput");
   const statusEl = document.getElementById("epUrlStatus");
   const btn = document.getElementById("epUrlSubmit");
-  const raw = urlInput.value.trim();
-  if (!raw) return;
+
+  const lines = urlInput.value.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return;
+
   btn.disabled = true;
   statusEl.classList.remove("error");
 
-  let parsed;
-  try { parsed = new URL(raw); } catch {
-    statusEl.textContent = "That doesn't look like a valid URL.";
-    statusEl.classList.add("error");
-    btn.disabled = false;
-    return;
+  const baseTitle = titleInput.value.trim();
+  const eps = await episodesForShow(state.showId);
+  let order = eps.length;
+  let added = 0;
+  const failed = [];
+
+  async function fetchVideoUrl(raw) {
+    let parsed;
+    try { parsed = new URL(raw); } catch { return { error: "not a valid URL" }; }
+    if (/\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(parsed.pathname + parsed.search)) {
+      return { videoUrl: raw, title: null };
+    }
+    try {
+      const resp = await fetch(raw, { mode: "cors" });
+      if (!resp.ok) throw new Error();
+      const html = await resp.text();
+      const videoUrl = extractVideoFromHtml(html, raw);
+      if (!videoUrl) throw new Error();
+      const titleMatch = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) || html.match(/<title>([^<]+)<\/title>/i);
+      return { videoUrl, title: titleMatch ? titleMatch[1].trim() : null };
+    } catch {
+      return { error: "couldn't read that page from here" };
+    }
   }
 
-  const eps = await episodesForShow(state.showId);
-  const order = eps.length;
-  const fallbackTitle = titleInput.value.trim() || `Episode ${order + 1}`;
-
-  async function saveEpisode(videoUrl, fetchedTitle) {
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    statusEl.textContent = lines.length > 1 ? `Adding ${i + 1} of ${lines.length}…` : "Checking that link…";
+    const result = await fetchVideoUrl(raw);
+    if (result.error) {
+      failed.push(raw);
+      continue;
+    }
+    order++;
+    const title = lines.length > 1
+      ? (baseTitle ? `${baseTitle} ${added + 1}` : (result.title || `Episode ${order}`))
+      : (baseTitle || result.title || `Episode ${order}`);
     await dbAdd("episodes", {
-      id: makeId(), showId: state.showId, order,
-      title: titleInput.value.trim() || fetchedTitle || fallbackTitle,
-      type: "url", videoUrl, sourceUrl: raw,
+      id: makeId(), showId: state.showId, order: order - 1,
+      title, type: "url", videoUrl: result.videoUrl, sourceUrl: raw,
       addedAt: Date.now(), position: 0, duration: 0, completed: false, lastWatchedAt: null,
     });
+    added++;
+  }
+
+  if (added > 0 && failed.length === 0) {
+    statusEl.textContent = added > 1 ? `Added ${added} episodes.` : "Added.";
+    statusEl.classList.remove("error");
     titleInput.value = ""; urlInput.value = "";
-    statusEl.textContent = "Added.";
-    setTimeout(() => { closeSheet("addEpisodeSheet"); statusEl.textContent = ""; }, 500);
-    renderShowDetail(state.showId);
-  }
-
-  if (/\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(parsed.pathname + parsed.search)) {
-    await saveEpisode(raw, null);
-    btn.disabled = false;
-    return;
-  }
-
-  statusEl.textContent = "Checking that page…";
-  try {
-    const resp = await fetch(raw, { mode: "cors" });
-    if (!resp.ok) throw new Error();
-    const html = await resp.text();
-    const videoUrl = extractVideoFromHtml(html, raw);
-    if (!videoUrl) throw new Error();
-    const titleMatch = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) || html.match(/<title>([^<]+)<\/title>/i);
-    await saveEpisode(videoUrl, titleMatch ? titleMatch[1].trim() : null);
-  } catch {
-    statusEl.textContent = "Couldn't read that page from here — most sites block this from a browser. Paste the direct video file link instead.";
+    setTimeout(() => { closeSheet("addEpisodeSheet"); statusEl.textContent = ""; }, 700);
+  } else if (added > 0 && failed.length > 0) {
+    statusEl.textContent = `Added ${added}, but ${failed.length} link${failed.length > 1 ? "s" : ""} couldn't be read — those are still in the box, everything else was cleared.`;
     statusEl.classList.add("error");
-  } finally {
-    btn.disabled = false;
+    titleInput.value = "";
+    urlInput.value = failed.join("\n");
+  } else {
+    statusEl.textContent = "Couldn't read any of those links — most sites block this from a browser. Paste direct video file links instead.";
+    statusEl.classList.add("error");
   }
+  renderShowDetail(state.showId);
+  btn.disabled = false;
 });
 
 document.getElementById("epFileInput").addEventListener("change", async () => {
-  const file = document.getElementById("epFileInput").files[0];
-  if (!file) return;
+  const files = Array.from(document.getElementById("epFileInput").files || []);
+  if (!files.length) return;
   const titleInput = document.getElementById("epFileTitle");
   const statusEl = document.getElementById("epFileStatus");
+  const baseTitle = titleInput.value.trim();
   const eps = await episodesForShow(state.showId);
-  const order = eps.length;
-  statusEl.textContent = "Adding…";
-  await dbAdd("episodes", {
-    id: makeId(), showId: state.showId, order,
-    title: titleInput.value.trim() || file.name.replace(/\.[^.]+$/, "") || `Episode ${order + 1}`,
-    type: "file", blob: file,
-    addedAt: Date.now(), position: 0, duration: 0, completed: false, lastWatchedAt: null,
-  });
+  let order = eps.length;
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    statusEl.textContent = files.length > 1 ? `Adding ${i + 1} of ${files.length}…` : "Adding…";
+    order++;
+    const title = files.length > 1
+      ? (baseTitle ? `${baseTitle} ${i + 1}` : file.name.replace(/\.[^.]+$/, ""))
+      : (baseTitle || file.name.replace(/\.[^.]+$/, "") || `Episode ${order}`);
+    await dbAdd("episodes", {
+      id: makeId(), showId: state.showId, order: order - 1,
+      title, type: "file", blob: file,
+      addedAt: Date.now(), position: 0, duration: 0, completed: false, lastWatchedAt: null,
+    });
+  }
+
   titleInput.value = "";
   document.getElementById("epFileInput").value = "";
-  statusEl.textContent = "Added.";
-  setTimeout(() => { closeSheet("addEpisodeSheet"); statusEl.textContent = ""; }, 500);
+  statusEl.textContent = files.length > 1 ? `Added ${files.length} episodes.` : "Added.";
+  setTimeout(() => { closeSheet("addEpisodeSheet"); statusEl.textContent = ""; }, 700);
   renderShowDetail(state.showId);
 });
 
