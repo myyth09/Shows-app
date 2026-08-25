@@ -125,6 +125,10 @@ button { font-family: inherit; }
 .tab-panel.active { display: block; }
 .dropzone { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border: 1.5px dashed #2a2436; border-radius: 14px; padding: 30px 0; color: #948DA3; font-size: 13.5px; margin-bottom: 10px; }
 .dropzone-glyph { font-size: 22px; color: #A855F7; }
+.poster-picker { display: flex; align-items: center; gap: 10px; border: 1.5px dashed #2a2436; border-radius: 12px; padding: 12px 14px; color: #948DA3; font-size: 13.5px; margin-bottom: 16px; overflow: hidden; }
+.poster-picker.has-image { border-style: solid; padding: 8px; }
+.poster-picker-glyph { font-size: 18px; flex-shrink: 0; }
+.poster-picker img { width: 44px; height: 66px; object-fit: cover; border-radius: 6px; flex-shrink: 0; }
 .status { font-size: 12.5px; min-height: 18px; margin: 0 0 6px; color: #F0ABFC; line-height: 1.5; }
 .status.error { color: #FB7185; }
 
@@ -192,6 +196,12 @@ button { font-family: inherit; }
     <p class="sheet-heading">New show</p>
     <p class="field-label">Title</p>
     <input id="newShowTitle" class="text-input" type="text" placeholder="Show title" />
+    <p class="field-label">Poster (optional)</p>
+    <label class="poster-picker" id="newPosterPicker" for="newPosterInput">
+      <span class="poster-picker-glyph">🖼</span>
+      <span>Tap to choose an image</span>
+    </label>
+    <input id="newPosterInput" type="file" accept="image/*" hidden />
     <p class="field-label">New-episodes link (optional)</p>
     <input id="newShowLink" class="text-input" type="url" inputmode="url" placeholder="https://... a page you check for new episodes" autocapitalize="off" autocorrect="off" />
     <p class="hint">This just becomes a button that opens that page — it doesn't fetch or download anything automatically.</p>
@@ -207,6 +217,13 @@ button { font-family: inherit; }
     <p class="sheet-heading">Edit show</p>
     <p class="field-label">Title</p>
     <input id="editShowTitle" class="text-input" type="text" />
+    <p class="field-label">Poster (optional)</p>
+    <label class="poster-picker" id="editPosterPicker" for="editPosterInput">
+      <span class="poster-picker-glyph">🖼</span>
+      <span>Tap to choose an image</span>
+    </label>
+    <input id="editPosterInput" type="file" accept="image/*" hidden />
+    <button class="close-btn" id="removePosterBtn" style="margin-top:-8px;">Remove current poster</button>
     <p class="field-label">New-episodes link (optional)</p>
     <input id="editShowLink" class="text-input" type="url" inputmode="url" placeholder="https://..." autocapitalize="off" autocorrect="off" />
     <button id="saveShowBtn" class="primary-btn">Save Changes</button>
@@ -357,6 +374,18 @@ function posterGradient(title) {
   const hue = hashHue(title || "?");
   return `linear-gradient(155deg, hsl(${hue} 65% 22%), hsl(${(hue + 40) % 360} 55% 12%))`;
 }
+let posterObjectUrls = [];
+function posterInnerHtml(show) {
+  if (show.posterBlob) {
+    const url = URL.createObjectURL(show.posterBlob);
+    posterObjectUrls.push(url);
+    return { style: "", inner: `<img src="${url}" alt="" style="width:100%;height:100%;object-fit:cover;position:absolute;inset:0;" />` };
+  }
+  return {
+    style: `background:${posterGradient(show.title)}`,
+    inner: `<span class="letter">${escapeHtml((show.title || "?").trim().charAt(0).toUpperCase())}</span>`,
+  };
+}
 
 // ================= view switching =================
 const views = { home: document.getElementById("view-home"), show: document.getElementById("view-show"), player: document.getElementById("view-player") };
@@ -387,6 +416,8 @@ function openPlayerView(episodeId) {
 
 // ================= HOME =================
 async function renderHome() {
+  posterObjectUrls.forEach((u) => URL.revokeObjectURL(u));
+  posterObjectUrls = [];
   const shows = await dbAll("shows");
   const allEps = await dbAll("episodes");
 
@@ -409,11 +440,12 @@ async function renderHome() {
       const show = showsById[ep.showId];
       if (!show) continue;
       const pct = ep.duration ? Math.min(100, Math.round((ep.position / ep.duration) * 100)) : 0;
+      const poster = posterInnerHtml(show);
       const card = document.createElement("button");
       card.className = "cw-card";
       card.style.border = "none";
       card.innerHTML = `
-        <div class="cw-grad" style="background:${posterGradient(show.title)}"></div>
+        <div class="cw-grad" style="${poster.style}">${show.posterBlob ? poster.inner : ""}</div>
         <div class="cw-play">▷</div>
         <div class="cw-info">
           <p class="cw-title">${escapeHtml(show.title)}</p>
@@ -436,9 +468,10 @@ async function renderHome() {
     const card = document.createElement("button");
     card.className = "show-card";
     const n = countByShow[show.id] || 0;
+    const poster = posterInnerHtml(show);
     card.innerHTML = `
-      <div class="show-poster" style="background:${posterGradient(show.title)}">
-        <span class="letter">${escapeHtml((show.title || "?").trim().charAt(0).toUpperCase())}</span>
+      <div class="show-poster" style="${poster.style}">
+        ${poster.inner}
       </div>
       <div class="show-meta">
         <p class="name">${escapeHtml(show.title)}</p>
@@ -450,7 +483,14 @@ async function renderHome() {
   }
 }
 
-document.getElementById("newShowBtn").addEventListener("click", () => openSheet("addShowSheet"));
+document.getElementById("newShowBtn").addEventListener("click", () => {
+  document.getElementById("newShowTitle").value = "";
+  document.getElementById("newShowLink").value = "";
+  document.getElementById("newPosterInput").value = "";
+  newPosterFile = null;
+  setPosterPreview(document.getElementById("newPosterPicker"), null);
+  openSheet("addShowSheet");
+});
 
 // ================= SHOW DETAIL =================
 async function renderShowDetail(showId) {
@@ -501,11 +541,51 @@ document.getElementById("showBackBtn").addEventListener("click", goHome);
 document.getElementById("addEpisodeBtn").addEventListener("click", () => openSheet("addEpisodeSheet"));
 document.getElementById("showMenuBtn").addEventListener("click", () => openSheet("showMenuSheet"));
 
+// ---- poster picker helpers ----
+let sheetPreviewUrls = [];
+function setPosterPreview(labelEl, file) {
+  sheetPreviewUrls.forEach((u) => URL.revokeObjectURL(u));
+  sheetPreviewUrls = [];
+  if (!file) {
+    labelEl.classList.remove("has-image");
+    labelEl.innerHTML = `<span class="poster-picker-glyph">🖼</span><span>Tap to choose an image</span>`;
+    return;
+  }
+  const url = URL.createObjectURL(file);
+  sheetPreviewUrls.push(url);
+  labelEl.classList.add("has-image");
+  labelEl.innerHTML = `<img src="${url}" alt="" /><span>${escapeHtml(file.name || "Selected")}</span>`;
+}
+
+let newPosterFile = null;
+document.getElementById("newPosterInput").addEventListener("change", (e) => {
+  newPosterFile = e.target.files[0] || null;
+  setPosterPreview(document.getElementById("newPosterPicker"), newPosterFile);
+});
+
+let editPosterFile = null;
+let editPosterRemoved = false;
+document.getElementById("editPosterInput").addEventListener("change", (e) => {
+  editPosterFile = e.target.files[0] || null;
+  editPosterRemoved = false;
+  setPosterPreview(document.getElementById("editPosterPicker"), editPosterFile);
+});
+document.getElementById("removePosterBtn").addEventListener("click", () => {
+  editPosterFile = null;
+  editPosterRemoved = true;
+  document.getElementById("editPosterInput").value = "";
+  setPosterPreview(document.getElementById("editPosterPicker"), null);
+});
+
 document.getElementById("menuEditShow").addEventListener("click", async () => {
   closeSheet("showMenuSheet");
   const show = await dbGet("shows", state.showId);
   document.getElementById("editShowTitle").value = show.title;
   document.getElementById("editShowLink").value = show.newEpisodesUrl || "";
+  editPosterFile = null;
+  editPosterRemoved = false;
+  document.getElementById("editPosterInput").value = "";
+  setPosterPreview(document.getElementById("editPosterPicker"), show.posterBlob || null);
   openSheet("editShowSheet");
 });
 document.getElementById("menuDeleteShow").addEventListener("click", async () => {
@@ -522,6 +602,8 @@ document.getElementById("saveShowBtn").addEventListener("click", async () => {
   const show = await dbGet("shows", state.showId);
   show.title = title;
   show.newEpisodesUrl = document.getElementById("editShowLink").value.trim() || null;
+  if (editPosterFile) show.posterBlob = editPosterFile;
+  else if (editPosterRemoved) show.posterBlob = null;
   await dbPut("shows", show);
   closeSheet("editShowSheet");
   renderShowDetail(state.showId);
@@ -541,9 +623,12 @@ document.getElementById("createShowBtn").addEventListener("click", async () => {
   if (!title) return;
   const link = document.getElementById("newShowLink").value.trim();
   const id = makeId();
-  await dbAdd("shows", { id, title, newEpisodesUrl: link || null, createdAt: Date.now() });
+  await dbAdd("shows", { id, title, newEpisodesUrl: link || null, posterBlob: newPosterFile || null, createdAt: Date.now() });
   document.getElementById("newShowTitle").value = "";
   document.getElementById("newShowLink").value = "";
+  document.getElementById("newPosterInput").value = "";
+  newPosterFile = null;
+  setPosterPreview(document.getElementById("newPosterPicker"), null);
   closeSheet("addShowSheet");
   openShowView(id);
 });
