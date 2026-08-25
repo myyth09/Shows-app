@@ -401,14 +401,14 @@ function showView(name) {
   views[name].classList.remove("hidden");
 }
 
-function goHome() {
-  stopPlayerTracking();
+async function goHome() {
+  await stopPlayerTracking();
   state.showId = null; state.episodeId = null;
   showView("home");
   renderHome();
 }
-function openShowView(showId) {
-  stopPlayerTracking();
+async function openShowView(showId) {
+  await stopPlayerTracking();
   state.showId = showId;
   showView("show");
   renderShowDetail(showId);
@@ -803,6 +803,7 @@ let playerObserver = null;
 let playerSaveTimer = null;
 let playerObjectUrls = [];
 let exitShowId = null;
+let currentPlayerEpisodes = [];
 
 function formatTime(t) {
   if (!isFinite(t)) return "0:00";
@@ -876,7 +877,6 @@ function buildCaughtUpSlide() {
     <button class="primary-btn" id="caughtUpBackBtn">Back to Show</button>
   `;
   el.querySelector("#caughtUpBackBtn").addEventListener("click", () => {
-    stopPlayerTracking();
     openShowView(exitShowId);
   });
   return el;
@@ -906,6 +906,7 @@ async function renderPlayer(startEpisodeId) {
   document.getElementById("playerShowNameTop").textContent = currentShow ? currentShow.title : "";
 
   const eps = await episodesForShow(startEp.showId);
+  currentPlayerEpisodes = eps;
   const feed = document.getElementById("playerFeed");
   feed.innerHTML = "";
   playerObjectUrls = [];
@@ -951,20 +952,27 @@ function setupPlayerObserver(eps) {
   document.querySelectorAll(".player-slide[data-id]").forEach((el) => playerObserver.observe(el));
 }
 
-function stopPlayerTracking() {
+async function stopPlayerTracking() {
   if (playerSaveTimer) { clearInterval(playerSaveTimer); playerSaveTimer = null; }
   if (playerObserver) { playerObserver.disconnect(); playerObserver = null; }
   const feed = document.getElementById("playerFeed");
-  feed.querySelectorAll("video").forEach((v) => v.pause());
+  const saves = [];
+  feed.querySelectorAll(".player-slide[data-id]").forEach((slide) => {
+    const video = slide.querySelector("video");
+    if (!video) return;
+    video.pause();
+    const ep = currentPlayerEpisodes.find((e) => e.id === slide.dataset.id);
+    if (ep && video.duration) saves.push(saveEpisodeProgress(ep, video, false));
+  });
+  await Promise.all(saves);
   feed.innerHTML = "";
   playerObjectUrls.forEach((u) => URL.revokeObjectURL(u));
   playerObjectUrls = [];
+  currentPlayerEpisodes = [];
 }
 
 document.getElementById("playerBackBtn").addEventListener("click", () => {
-  const showId = exitShowId;
-  stopPlayerTracking();
-  openShowView(showId);
+  openShowView(exitShowId);
 });
 
 // ================= sheets =================
