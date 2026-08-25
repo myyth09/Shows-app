@@ -66,6 +66,10 @@ button { font-family: inherit; }
 .ep-list { padding: 4px 18px 40px; }
 .ep-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #1c1826; }
 .ep-num { width: 26px; text-align: center; font-size: 14px; font-weight: 700; color: #948DA3; flex-shrink: 0; }
+.ep-reorder { display: flex; flex-direction: column; gap: 1px; flex-shrink: 0; }
+.ep-reorder button { width: 24px; height: 22px; border: none; background: transparent; color: #948DA3; font-size: 11px; line-height: 1; border-radius: 5px; display: flex; align-items: center; justify-content: center; }
+.ep-reorder button:active:not(:disabled) { background: rgba(168,85,247,0.3); color: #F5F3FA; }
+.ep-reorder button:disabled { opacity: 0.2; }
 .ep-body { flex: 1; min-width: 0; }
 .ep-title { font-size: 14.5px; font-weight: 600; margin: 0 0 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ep-status { font-size: 12px; color: #948DA3; margin: 0; }
@@ -271,7 +275,7 @@ textarea.text-input { font-family: inherit; resize: vertical; line-height: 1.5; 
         <span>Tap to choose one or more videos</span>
       </label>
       <input id="epFileInput" type="file" accept="video/*" multiple hidden />
-      <p class="hint">Select multiple files at once to add them all in order. Stored on this device only, in this app.</p>
+      <p class="hint">Select multiple files at once to add them in filename order. iOS doesn't always preserve tap order for multi-select — use the ▲▼ buttons on the episode list afterward if it needs fixing. Stored on this device only.</p>
       <p id="epFileStatus" class="status"></p>
     </div>
 
@@ -518,6 +522,10 @@ async function renderShowDetail(showId) {
     const pct = ep.duration ? Math.min(100, Math.round((ep.position / ep.duration) * 100)) : 0;
     const statusText = ep.completed ? "Watched" : (ep.position > 5 ? `${pct}% watched` : "");
     row.innerHTML = `
+      <div class="ep-reorder">
+        <button class="ep-up" aria-label="Move up" ${i === 0 ? "disabled" : ""}>▲</button>
+        <button class="ep-down" aria-label="Move down" ${i === eps.length - 1 ? "disabled" : ""}>▼</button>
+      </div>
       <div class="ep-num">${i + 1}</div>
       <div class="ep-body">
         <p class="ep-title">${escapeHtml(ep.title)}</p>
@@ -528,6 +536,14 @@ async function renderShowDetail(showId) {
     `;
     row.querySelector(".ep-body").addEventListener("click", () => openPlayerView(ep.id));
     row.querySelector(".ep-num").addEventListener("click", () => openPlayerView(ep.id));
+    row.querySelector(".ep-up").addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await moveEpisode(showId, ep.id, -1);
+    });
+    row.querySelector(".ep-down").addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await moveEpisode(showId, ep.id, 1);
+    });
     row.querySelector(".ep-del").addEventListener("click", async (e) => {
       e.stopPropagation();
       if (!confirm(`Remove "${ep.title}"?`)) return;
@@ -536,6 +552,20 @@ async function renderShowDetail(showId) {
     });
     list.appendChild(row);
   });
+}
+
+async function moveEpisode(showId, epId, delta) {
+  const eps = await episodesForShow(showId);
+  const idx = eps.findIndex((e) => e.id === epId);
+  const swapIdx = idx + delta;
+  if (idx < 0 || swapIdx < 0 || swapIdx >= eps.length) return;
+  const a = eps[idx], b = eps[swapIdx];
+  const tmp = a.order;
+  a.order = b.order;
+  b.order = tmp;
+  await dbPut("episodes", a);
+  await dbPut("episodes", b);
+  renderShowDetail(showId);
 }
 
 document.getElementById("showBackBtn").addEventListener("click", goHome);
@@ -735,6 +765,10 @@ document.getElementById("epUrlSubmit").addEventListener("click", async () => {
 document.getElementById("epFileInput").addEventListener("change", async () => {
   const files = Array.from(document.getElementById("epFileInput").files || []);
   if (!files.length) return;
+  // iOS doesn't reliably preserve tap order for multi-select; filename order is a better default.
+  if (files.length > 1) {
+    files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+  }
   const titleInput = document.getElementById("epFileTitle");
   const statusEl = document.getElementById("epFileStatus");
   const baseTitle = titleInput.value.trim();
